@@ -1,0 +1,33 @@
+schema: "1"
+pipeline:
+  application: yourotherapplicationname
+  name: YourOtherProject Production
+  id: yourotherapplicationname-prod
+  template:
+    source: https://url/to/your/production-template.yml
+  variables:
+    application: yourotherapplicationname
+    loadbalancer: yourotherapplicationname-prod
+    clustername: yourotherapplicationname-prod-api
+    stagingloadbalancer: yourotherapplicationname-dev
+    stagingclustername: yourotherapplicationname-staging-api
+    imagenamepattern: .*yourotherapplicationname.*
+    smoketestjob: path/to/your/smoketest/project
+    gcrrepo: your-gcr-repo-name/yourotherapplicationname
+    gcrimage: us.gcr.io/your-gcr-repo-name/yourotherapplicationname
+  metadata:
+    description: Your Other Project Production Pipeline Config
+    name: YourOtherProject-Production
+    owner: email@yourcompany.com
+    scopes:
+    - yourotherapplicationname
+configuration:
+  inherit: ['concurrentExecutions', 'parameters', 'notifications']
+  triggers:
+  - account: your-gcr-account-name
+    enabled: true
+    organization: your-gcr-repo-name
+    registry: us.gcr.io
+    repository: your-gcr-repo-name/yourotherapplicationname
+    runAsUser: optional-runas-user-name
+    type: docker

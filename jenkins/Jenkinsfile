@@ -1,0 +1,120 @@
+def app
+
+pipeline {
+	agent {
+		// depending on the project, we may want to use different build agents
+		// by labeling our build agents in Jenkins, we can control which agent
+		// is used to build this project
+		label 'git && docker'
+	}
+	
+	stages {
+
+		stage('Build') {
+
+			environment {
+				// example of pulling the value from a Jenkins secret
+				// in this particular example, our builds require access to a private nuget repository hosted on myget
+				// here we provide the credentials necessary
+				NUGET_API_KEY = credentials('myget-api-key')
+				// example of setting a value based on the BUILD_NUMBER
+				VERSION = "1.0.${env.BUILD_NUMBER}"
+			}
+			
+			steps {
+				sh 'docker-compose -f src/docker-compose.ci.build.yml -p ${JOB_NAME}_build_${BRANCH_NAME}_${BUILD_NUMBER} up --no-color --exit-code-from ci-build'
+			}
+			
+			post {
+				always {
+					// Ensure that the container is cleaned up, -v also cleans up any volumes
+					sh 'docker-compose -f src/docker-compose.ci.build.yml -p ${JOB_NAME}_build_${BRANCH_NAME}_${BUILD_NUMBER} down -v'
+					sh 'sudo chown -R $UID *'
+					step($class: 'MSTestPublisher', testResultsFile: '**/results.trx')
+				}
+			}
+		}
+		
+		stage('Authenticate with GCR') {
+
+			environment {
+				// example of pulling the value from a Jenkins secret
+				SECRET_FILE = credentials('some-secret-file')
+			}
+			
+			steps {
+				script {
+
+					// Google Cloud GCR auth for Docker writes to .dockercfg in the users home directory
+					// We mount this inside the container so that the file is updated for the outer pipeline user
+					docker.image('google/cloud-sdk:alpine').inside("-v ${env.HOME}:${env.HOME}:rw,z -e HOME=${env.HOME}") {
+						sh 'gcloud auth activate-service-account --key-file=$SECRET_FILE --project YOUR-GCR-PROJECT-NAME'
+						sh 'gcloud docker -a'
+					}
+				}	
+			}
+		}
+		
+		stage('Build Image and Push to Test Registry') {
+
+			steps {
+
+				script {
+
+					// This builds the actual image; synonymous to docker build on the command line
+					app = docker.build("YOUR-GCR-PROJECT-NAME/YOUR-CONTAINER-NAME-temp:${env.BRANCH_NAME}-${env.BUILD_NUMBER}", 'src/YOUR-SOURCE-CODE-DIRECTORY')
+					
+					// Publish the image to a testing repository for use in Run Test Project stage
+					// We can't just use the local image, as the other job might run on a different agent
+					docker.withRegistry('https://us.gcr.io') {
+						app.push()
+					}
+				}
+			}
+		}
+		
+		stage('Integration Tests') {
+
+			steps {
+
+				// NOTE: Our repositories are setup so that our integration test projects are bundled with the application project
+				// hence the use of a relative path to the test project
+				build job: '../relative/path/to/YOUR-TEST-PROJECT', parameters: [[$class: 'StringParameterValue', name: 'UNDERTEST_IMAGE', value: "us.gcr.io/${app.id}"]], propagate: true
+			}
+		}
+		
+		stage('Push to Production') {
+
+			when {
+
+				// Only push to the production registry for builds of the master branch
+				branch 'master'
+			}
+
+			environment {
+
+				VERSION = "1.0.${env.BUILD_NUMBER}"
+			}
+			
+			steps {
+
+				// Tag the image with the production registry name
+				// We can't use .tag("") because that can only change the tag, not the registry
+				sh "docker tag ${app.id} YOUR-GCR-PROJECT/YOUR-CONTAINER-NAME:${env.BUILD_NUMBER}"
+				
+				script {
+
+					/* Finally, we'll push the image with two tags:
+					 * First, the incremental build number from Jenkins
+					 * Second, the 'latest' tag.
+					 * Pushing multiple tags is cheap, as all the layers are reused. */
+					docker.withRegistry('https://us.gcr.io') {
+						app = docker.image("YOUR-GCR-PROJECT/YOUR-CONTAINER-NAME:${env.BUILD_NUMBER}")
+						app.push()
+						app.push("latest")
+					}
+				}
+			}
+		}
+	}
+}
