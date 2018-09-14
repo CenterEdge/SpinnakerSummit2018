@@ -35,27 +35,11 @@ pipeline {
 			}
 		}
 		
-		stage('Authenticate with GCR') {
-
+		stage('Build Image and Push to Test Registry') {
 			environment {
 				// example of pulling the value from a Jenkins secret
 				SECRET_FILE = credentials('some-secret-file')
 			}
-			
-			steps {
-				script {
-
-					// Google Cloud GCR auth for Docker writes to .dockercfg in the users home directory
-					// We mount this inside the container so that the file is updated for the outer pipeline user
-					docker.image('google/cloud-sdk:alpine').inside("-v ${env.HOME}:${env.HOME}:rw,z -e HOME=${env.HOME}") {
-						sh 'gcloud auth activate-service-account --key-file=$SECRET_FILE --project YOUR-GCR-PROJECT-NAME'
-						sh 'gcloud docker -a'
-					}
-				}	
-			}
-		}
-		
-		stage('Build Image and Push to Test Registry') {
 
 			steps {
 
@@ -63,6 +47,9 @@ pipeline {
 
 					// This builds the actual image; synonymous to docker build on the command line
 					app = docker.build("YOUR-GCR-PROJECT-NAME/YOUR-CONTAINER-NAME-temp:${env.BRANCH_NAME}-${env.BUILD_NUMBER}", 'src/YOUR-SOURCE-CODE-DIRECTORY')
+					
+					// Authenticate with GCR
+					sh 'docker login -u _json_key --password-stdin https://us.gcr.io < $SECRET_FILE'
 					
 					// Publish the image to a testing repository for use in Run Test Project stage
 					// We can't just use the local image, as the other job might run on a different agent
